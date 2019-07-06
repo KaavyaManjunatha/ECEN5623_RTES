@@ -63,18 +63,7 @@ void *grabRsrcs(void *threadp)
         pthread_mutex_unlock(&rsrcA);
      }
 
-     /*
-     ret_thread1 = pthread_mutex_timedlock(&rsrcB,&thread1_timeout);
-      if(ret_thread1!=0){
-        printf("THREAD 1 timed out! and released A\n");
-        pthread_mutex_unlock(&rsrcA);
-        //usleep(1000000);
-
-        //pthread_mutex_lock(&rsrcB);
-        //pthread_mutex_lock(&rsrcA);
-        printf("THREAD 2 got B and A\n");
-     }*/
-
+    
      rsrcBCnt++;
      printf("THREAD 1 got A and B\n");//4
      pthread_mutex_unlock(&rsrcB);
@@ -93,13 +82,7 @@ void *grabRsrcs(void *threadp)
      while(pthread_mutex_trylock(&rsrcA)){
          pthread_mutex_unlock(&rsrcB);
      }
-     /*./ 
-     ret_thread2=pthread_mutex_timedlock(&rsrcA,&thread2_timeout);
-     if(ret_thread2!=0){
-        printf("THREAD 2 timed out! and released B \n");//6
-        pthread_mutex_unlock(&rsrcB);
-     }
-      */
+    
       rsrcACnt++;
       printf("THREAD 2 got B and A\n");
       pthread_mutex_unlock(&rsrcA);
@@ -147,13 +130,7 @@ int main (int argc, char *argv[])
    if (rc) {printf("ERROR; pthread_create() rc is %d\n", rc); perror(NULL); exit(-1);}
    printf("Thread 1 spawned\n");
 
-   if(safe) // Make sure Thread 1 finishes with both resources first
-   {
-     if(pthread_join(threads[0], NULL) == 0)
-       printf("Thread 1: %x done\n", (unsigned int)threads[0]);
-     else
-       perror("Thread 1");
-   }
+  
 
    printf("Creating thread %d\n", THREAD_2);
    threadParams[THREAD_2].threadIdx=THREAD_2;

@@ -1,3 +1,10 @@
+/****************************************************************************/
+/*                                                                          */
+/* Sam Siewert - 10/14/97                                                   */
+/*                                                                          */
+/*                                                                          */
+/****************************************************************************/                                                                  
+#include "mqueue.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
@@ -7,95 +14,144 @@
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <string.h>
-#include<mqueue.h>
+#include <mqueue.h>
 
-#define SNDRCV_MQ "send_receive_mq"
-#define MAX_MSG_SIZE 128
+#define SNDRCV_MQ "/heap_mq"
 #define ERROR -1
 
 struct mq_attr mq_attr2;
 pthread_t receiver_thread,sender_thread;
-pthread_attribute
+pthread_attr_t thread_attribute;
 
-static char canned_msg[] = "this is a test, and only a test, in the event of a real emergency, you would be instructed ...";
+struct mq_attr mq_attr;
+static mqd_t mymq;
 
+/* receives pointer to heap, reads it, and deallocate heap memory */
 
 void receiver(void)
 {
-  printf("\nEntered receiver");
-  mqd_t mymq;
-  char buffer[MAX_MSG_SIZE];
+  char buffer[sizeof(void *)+sizeof(int)];
+  void *buffptr; 
   int prio;
   int nbytes;
+  int count = 0;
+  int id;
+  int i=0;
+  while(i<10) {
 
-  /* note that VxWorks does not deal with permissions? */
-  mymq = mq_open(SNDRCV_MQ, O_CREAT|O_RDWR, 0, &mq_attr2);
+    /* read oldest, highest priority msg from the message queue */
 
-  if(mymq == (mqd_t)ERROR)
-    perror("mq_open");
+    printf("Reading %ld bytes\n", sizeof(void *));
+  
+    if((nbytes = mq_receive(mymq, buffer, (size_t)(sizeof(void *)+sizeof(int)), &prio)) == ERROR)
+/*
+    if((nbytes = mq_receive(mymq, (void *)&buffptr, (size_t)sizeof(void *), &prio)) == ERROR)
+*/
+    {
+      perror("mq_receive");
+    }
+    else
+    {
+      memcpy(&buffptr, buffer, sizeof(void *));
+      memcpy((void *)&id, &(buffer[sizeof(void *)]), sizeof(int));
+      printf("receive: ptr msg 0x%X received with priority = %d, length = %d, id = %d\n", buffptr, prio, nbytes, id);
 
-  /* read oldest, highest priority msg from the message queue */
-  if((nbytes = mq_receive(mymq, buffer, MAX_MSG_SIZE, &prio)) == ERROR)
-  {
-    perror("mq_receive");
-  }
-  else
-  {
-    buffer[nbytes] = '\0';
-    printf("receive: msg %s received with priority = %d, length = %d\n",
-           buffer, prio, nbytes);
-  }
+      printf("contents of ptr = \n%s\n", (char *)buffptr);
+
+      free(buffptr);
+
+      printf("heap space memory freed\n");
+    }
+    i++;
     
+  }
+
 }
 
 
+static char imagebuff[4096];
+
 void sender(void)
 {
-  printf("\nEntered sender");
-  mqd_t mymq;
+  char buffer[sizeof(void *)+sizeof(int)];
+  void *buffptr;
   int prio;
   int nbytes;
+  int id = 999;
+  int i=0;
 
-  /* note that VxWorks does not deal with permissions? */
-  mymq = mq_open(SNDRCV_MQ, O_RDWR, 0, &mq_attr2);
+  while(i<10) {
 
-  if(mymq == (mqd_t)ERROR)
-    perror("mq_open");
+    /* send malloc'd message with priority=30 */
 
-  /* send message with priority=30 */
-  if((nbytes = mq_send(mymq, canned_msg, sizeof(canned_msg), 30)) == ERROR)
-  {
-    perror("mq_send");
-  }
-  else
-  {
-    printf("send: message successfully sent\n");
+    buffptr = (void *)malloc(sizeof(imagebuff));
+    strcpy(buffptr, imagebuff);
+    printf("Message to send = %s\n", (char *)buffptr);
+
+    printf("Sending %ld bytes\n", sizeof(buffptr));
+
+    memcpy(buffer, &buffptr, sizeof(void *));
+    memcpy(&(buffer[sizeof(void *)]), (void *)&id, sizeof(int));
+
+    if((nbytes = mq_send(mymq, buffer, (size_t)(sizeof(void *)+sizeof(int)), 30)) == ERROR)
+    {
+      perror("mq_send");
+    }
+    else
+    {
+      printf("send: message ptr 0x%X successfully sent\n", buffptr);
+    }
+    i++;
+    usleep(3000000);
+
   }
   
 }
 
 
-int main(){
-      mq_attr2.mq_maxmsg = 100;
-      mq_attr2.mq_msgsize = MAX_MSG_SIZE;
-      mq_attr2.mq_flags = 0;
 
+static int sid, rid;
 
+int main(void)
+{
+  int i, j;
+  char pixel = 'A';
 
-      pthread_create(&receiver_thread,NULL,receiver,NULL);
-      pthread_create(&sender_thread,NULL,sender,NULL);
+  for(i=0;i<4096;i+=64) {
+    pixel = 'A';
+    for(j=i;j<i+64;j++) {
+      imagebuff[j] = (char)pixel++;
+    }
+    imagebuff[j-1] = '\n';
+  }
+  imagebuff[4095] = '\0';
+  imagebuff[63] = '\0';
 
-      pthread_join(&receiver_thread,NULL);
-      pthread_join(&sender_thread,NULL);
+  printf("buffer =\n%s", imagebuff);
 
-   /* setup common message q attributes */
-      
-   
-   return 0;
+  /* setup common message q attributes */
+  mq_attr2.mq_maxmsg = 100;
+  mq_attr2.mq_msgsize = sizeof(void *)+sizeof(int);
+  mq_attr2.mq_curmsgs =0;
+  mq_attr2.mq_flags = 0;
+
+  
+  mymq = mq_open(SNDRCV_MQ, O_CREAT|O_RDWR, 0644, &mq_attr2);
+ 
+
+  if(mymq == (mqd_t)ERROR){
+    perror("mq_open");
+    exit(1);
+  }
+  
+   printf("\nmessage queue opened successfully\n");
+
+   pthread_create(&receiver_thread,NULL,receiver,NULL);
+   pthread_create(&sender_thread,NULL,sender,NULL);
+
+   pthread_join(receiver_thread,NULL);
+   pthread_join(sender_thread,NULL);
+
+   mq_close(mymq);
+   mq_unlink(mymq);
 }
-
-
-
-   
-
-
