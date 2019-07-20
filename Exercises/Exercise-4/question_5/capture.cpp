@@ -15,6 +15,13 @@ using namespace std;
 
 unsigned char imagebuffer[1440*2560*3];
 
+Mat frame;
+VideoCapture cap(0);
+
+double time_before_frame_transform;
+double time_after_frame_transform,time_taken_to_transform_frame;
+double frame_rate;
+
 Mat sobel_transform(Mat mat_frame){
   //printf("Performing sobel transform");
   int scale = 1;
@@ -35,6 +42,14 @@ Mat sobel_transform(Mat mat_frame){
 
   return mat_frame;
 }
+
+
+void *sobel_transform(){
+  cap >> frame;
+
+  frame = sobel_transform
+}
+
 
 double getTimeMsec(void)
 {
@@ -73,7 +88,7 @@ int main( int argc, char** argv )
              break;
         }    
     }    
-    transform_frame_rate = (frameCount/total_transform_time)*100;
+    transform_frame_rate = (frameCount/total_transform_time)*1000;
     printf("\nTotal transformation time %lf",total_transform_time);
     printf("\n Total Frames processed %lf",frameCount);
     printf("\ntransformation time per frame %lf\n",transform_frame_rate);
