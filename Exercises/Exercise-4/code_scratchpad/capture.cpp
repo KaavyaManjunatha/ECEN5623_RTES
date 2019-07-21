@@ -25,11 +25,17 @@ using namespace std;
 #define NUM_THREADS 1
 #define NUM_CPU_CORES 1
 
-#define NO_OF_ANALYSIS_FRAMES 100
+#define IGNORED_FRAMES 10
+#define NO_OF_ANALYSIS_FRAMES 50
+#define NO_OF_TRANSFORMATION_FRAMES 100
 
 unsigned char imagebuffer[1440*2560*3];
 
-static int threadRuns=0;
+
+void help(){
+  printf(" \n \n Usage: \n ./capture [Transform number] [IMAGE_WIDTH] [IMAGE_HEIGHT]  \n \n\
+  Transform number \n 1:Sobel \n 2:Canny \n 3:Hough line \n ");
+}
 
 double getTimeMsec(void)
 {
@@ -38,8 +44,13 @@ double getTimeMsec(void)
   return ((event_ts.tv_sec)*1000.0) + ((event_ts.tv_nsec)/1000000.0);
 }
 
-Mat frame;
-VideoCapture cap(0);
+Mat frame,canny_frame;
+Mat gray;
+vector<Vec3f> circles;
+
+VideoCapture capture(CV_CAP_ANY);
+
+vector<Vec4i> lines;
 
 //variables for frame analysis
 double time_before_frame_transform,time_after_frame_transform,time_taken_to_transform_frame;
@@ -47,7 +58,13 @@ double total_transformation_time;
 double frame_rate;
 double total_frame_count;
 double reference_time;
+double positive_jitter, negative_jitter;
+int deadlines_miss_count=0;
+int frames_required_to_be_transformed;
+double deadline;
 
+
+int transform_number;
 
 typedef struct
 {
@@ -91,7 +108,28 @@ void print_scheduler(void)
 
 }
 
-Mat canny_transform(Mat mat_frame){
+
+
+Mat hough_circle_transform_frame(Mat mat_frame){
+  cvtColor(mat_frame, gray, CV_BGR2GRAY);
+  GaussianBlur(gray, gray, Size(9,9), 2, 2);
+  HoughCircles(gray, circles, CV_HOUGH_GRADIENT, 1, gray.rows/8, 100, 50, 0, 0);
+
+  for( size_t i = 0; i < circles.size(); i++ )
+        {
+          Point center(cvRound(circles[i][0]), cvRound(circles[i][1]));
+          int radius = cvRound(circles[i][2]);
+          // circle center
+          circle( mat_frame, center, 3, Scalar(0,255,0), -1, 8, 0 );
+          // circle outline
+          circle( mat_frame, center, radius, Scalar(0,0,255), 3, 8, 0 );
+        }
+
+
+  return mat_frame;
+}
+
+Mat canny_transform_frame(Mat mat_frame){
   int lowThreshold;
   int const max_lowThreshold = 100;
   int kernel_size = 3;
@@ -102,7 +140,7 @@ Mat canny_transform(Mat mat_frame){
   return mat_frame;
 }
 
-Mat sobel_transform(Mat mat_frame){
+Mat sobel_transform_frame(Mat mat_frame){
   //printf("Performing sobel transform");
   int scale = 1;
   int delta = 0;
@@ -123,66 +161,185 @@ Mat sobel_transform(Mat mat_frame){
   return mat_frame;
 }
 
-double sobel_frame_analysis(){
+double get_sobel_transform_deadline(){
   int i;
   Mat analysis_frame;
   double analysis_time_before_frame_transform,analysis_time_after_frame_transform,analysis_time_taken_to_transform_frame;
   double analysis_total_transformation_time;
-  double analysis_frame_rate;
+  double analysis_milliseconds_per_frame;
   double deadline;
 
-  for(i=0;i<NO_OF_ANALYSIS_FRAMES;i++){
-    analysis_time_after_frame_transform = getTimeMsec();
-    cap >> analysis_frame;
-    analysis_frame = sobel_transform(analysis_frame);
+
+  for(i=0;i<NO_OF_ANALYSIS_FRAMES+IGNORED_FRAMES;i++){
+    //Ignore the first few frames
+    if(i<=IGNORED_FRAMES){
+           printf("\nFrame Ignored");
+        continue; 
+    }
+
+    analysis_time_before_frame_transform = getTimeMsec();
+    capture >> analysis_frame;
+    analysis_frame = sobel_transform_frame(analysis_frame);
     analysis_time_after_frame_transform = getTimeMsec();
     analysis_time_taken_to_transform_frame = analysis_time_after_frame_transform-analysis_time_before_frame_transform;
+    printf("\n analysis_time_taken_to_transform_frame : %f milliseconds",analysis_time_taken_to_transform_frame);
     analysis_total_transformation_time+=analysis_time_taken_to_transform_frame;
   }
-  frame_rate = (total_frame_count/total_transformation_time);
-  deadline = 1.2 *frame_rate;
+  //printf("\n total transformation time analysis : %f",analysis_total_transformation_time);
+  analysis_milliseconds_per_frame = (analysis_total_transformation_time/NO_OF_ANALYSIS_FRAMES);
+  deadline = 1.2 * analysis_milliseconds_per_frame;
+  printf("\n milliseconds per frame : %f \ndeadline set= %f milliseconds",analysis_milliseconds_per_frame,deadline);
   return deadline;
 }
 
 
-
 void *sobel_transform(void *threadp){
-  double deadline = sobel_frame_analysis();
-  printf("Deadline: %f",deadline);
+  deadline = get_sobel_transform_deadline();
+  printf("\nDeadline: %f",deadline);
   while(1){
-    time_before_frame_transform = getTimeMsec();
-    cap >> frame;
-    frame = sobel_transform(frame);
+    time_before_frame_transform = getTimeMsec();  
+    capture >> frame;
+    frame = sobel_transform_frame(frame);
     time_after_frame_transform = getTimeMsec();
     time_taken_to_transform_frame = time_after_frame_transform-time_before_frame_transform;
     total_transformation_time+=time_taken_to_transform_frame;
+    printf("\n time_taken_to_transform_frame : %f milliseconds",time_taken_to_transform_frame);
+    if(deadline>time_taken_to_transform_frame){
+      negative_jitter += deadline-time_taken_to_transform_frame;
+    }else{
+      positive_jitter += time_taken_to_transform_frame - deadline;
+      printf("Deadline has been missed!");
+      deadlines_miss_count++;
+    }
     total_frame_count++;
     imshow("sobel_frame",frame);
-    char c = cvWaitKey(10);
-    if( c == 27 ){
+    char c = cvWaitKey(1);
+    if( total_frame_count > NO_OF_TRANSFORMATION_FRAMES-1){
+    capture.release();
       break;
     }
   }
+}
+
+
+
+double get_canny_transform_deadline(){
+  int i;
+  Mat analysis_frame;
+  double analysis_time_before_frame_transform,analysis_time_after_frame_transform,analysis_time_taken_to_transform_frame;
+  double analysis_total_transformation_time;
+  double analysis_milliseconds_per_frame;
+  double deadline_local;
+
+  for(i=0;i<NO_OF_ANALYSIS_FRAMES+IGNORED_FRAMES;i++){
+    ///Ignore first few frames
+      if(i<=IGNORED_FRAMES){
+        continue; 
+      }
+    
+    analysis_time_before_frame_transform = getTimeMsec();
+    capture >> analysis_frame;
+    analysis_frame = canny_transform_frame(analysis_frame);
+    analysis_time_after_frame_transform = getTimeMsec();
+    analysis_time_taken_to_transform_frame = analysis_time_after_frame_transform-analysis_time_before_frame_transform;
+    printf("\n analysis_time_taken_to_transform_frame : %f milliseconds",analysis_time_taken_to_transform_frame);
+    analysis_total_transformation_time+=analysis_time_taken_to_transform_frame;
+  }
+  //printf("\n total transformation time analysis : %f",analysis_total_transformation_time);
+  analysis_milliseconds_per_frame = (analysis_total_transformation_time/NO_OF_ANALYSIS_FRAMES);
+  deadline_local = 1.2 * analysis_milliseconds_per_frame;
+  printf("\n milliseconds per frame : %f \ndeadline set= %f milliseconds",analysis_milliseconds_per_frame,deadline);
+  return deadline_local;
 }
 
 
 
 void *canny_transform(void *threadp){
+  deadline = get_canny_transform_deadline();
+  printf("\nDeadline: %f",deadline);
   while(1){
-    time_before_frame_transform = getTimeMsec();
-    cap >> frame;
-    frame = canny_transform(frame);
+    time_before_frame_transform = getTimeMsec();  
+    capture >> frame;
+    frame = canny_transform_frame(frame);
     time_after_frame_transform = getTimeMsec();
     time_taken_to_transform_frame = time_after_frame_transform-time_before_frame_transform;
     total_transformation_time+=time_taken_to_transform_frame;
+    printf("\n time_taken_to_transform_frame : %f milliseconds",time_taken_to_transform_frame);
+
+    if(deadline>time_taken_to_transform_frame){
+      negative_jitter += deadline-time_taken_to_transform_frame;
+    }else{
+      positive_jitter += time_taken_to_transform_frame - deadline;
+      printf("\nDeadline has been missed!");
+      deadlines_miss_count++;
+    }
     total_frame_count++;
     imshow("canny_frame",frame);
-    char c = cvWaitKey(10);
-    if( c == 27 ){
+    char c = cvWaitKey(1);
+    if( total_frame_count > NO_OF_TRANSFORMATION_FRAMES-1){
       break;
     }
   }
 }
+
+double get_hough_circle_transform_deadline(){
+  int i;
+  Mat analysis_frame;
+  double analysis_time_before_frame_transform,analysis_time_after_frame_transform,analysis_time_taken_to_transform_frame;
+  double analysis_total_transformation_time;
+  double analysis_milliseconds_per_frame;
+  double deadline_local;
+
+  for(i=0;i<NO_OF_ANALYSIS_FRAMES+IGNORED_FRAMES;i++){
+    ///Ignore first few frames
+      if(i<=IGNORED_FRAMES){
+        continue; 
+      }
+    
+    analysis_time_before_frame_transform = getTimeMsec();
+    capture >> analysis_frame;
+    analysis_frame = hough_circle_transform_frame(analysis_frame);
+    analysis_time_after_frame_transform = getTimeMsec();
+    analysis_time_taken_to_transform_frame = analysis_time_after_frame_transform-analysis_time_before_frame_transform;
+    printf("\n analysis_time_taken_to_transform_frame : %f milliseconds",analysis_time_taken_to_transform_frame);
+    analysis_total_transformation_time+=analysis_time_taken_to_transform_frame;
+  }
+  //printf("\n total transformation time analysis : %f",analysis_total_transformation_time);
+  analysis_milliseconds_per_frame = (analysis_total_transformation_time/NO_OF_ANALYSIS_FRAMES);
+  deadline_local = 1.2 * analysis_milliseconds_per_frame;
+  printf("\n milliseconds per frame : %f \ndeadline set= %f milliseconds",analysis_milliseconds_per_frame,deadline);
+  return deadline_local;
+}
+
+void *hough_circle_transform(void *threadp){
+   deadline = get_hough_circle_transform_deadline();
+  printf("\nDeadline: %f",deadline);
+  while(1){
+    time_before_frame_transform = getTimeMsec();  
+    capture >> frame;
+    frame = hough_circle_transform_frame(frame);
+    time_after_frame_transform = getTimeMsec();
+    time_taken_to_transform_frame = time_after_frame_transform-time_before_frame_transform;
+    total_transformation_time+=time_taken_to_transform_frame;
+    printf("\n time_taken_to_transform_frame : %f milliseconds",time_taken_to_transform_frame);
+
+    if(deadline>time_taken_to_transform_frame){
+      negative_jitter += deadline-time_taken_to_transform_frame;
+    }else{
+      positive_jitter += time_taken_to_transform_frame - deadline;
+      printf("\nDeadline has been missed!");
+      deadlines_miss_count++;
+    }
+    total_frame_count++;
+    imshow("canny_frame",frame);
+    char c = cvWaitKey(1);
+    if( total_frame_count > NO_OF_TRANSFORMATION_FRAMES-1){
+      break;
+    }
+  }
+}
+
+
 
 
 void real_time_setup(){
@@ -240,39 +397,80 @@ void real_time_setup(){
 }
 
 
+void print_frame_analysis_output(){
 
+    switch(transform_number){
+      case 1:
+              printf("\n*******************Sobel Transform*****************");
+              break;
 
+      case 2:
+	      printf("\n*******************Canny Transform*****************");
+              break;
 
-void *threadCounter(void *threadp){
-  threadParams_t *threadParams = (threadParams_t *)threadp;
-  print_scheduler();
-  threadRuns++;
-  printf("\n Running thread %d",threadParams->threadIdx);
+      case 3:
+	      printf("\n*******************Hough Circle Transform*****************");
+              break;
+    }
+    printf("\nDeadline set : %f milliseconds \n",deadline);
+    printf("Total Frames processed: %d \n",(int)total_frame_count);
+    printf("Total transformation time: %f \n",(int)total_transformation_time);
+    printf("frame rate = %f frames per second\n", frame_rate);
+    printf("positive jitter = %f milliseconds\n", positive_jitter);
+    printf("negative jitter = %f milliseconds\n", negative_jitter);
+    printf("no of deadlines missed = %d",deadlines_miss_count);
 }
+
+
+
 
 int main(int argc, char** argv){
     int i=0,rc;
+    setNumThreads(0);
+    int image_width = 640;
+    int image_height = 320;
+    printf("argc=%d",argc);
+    if(argc != 4 || atoi(argv[1])<1 || atoi(argv[1])>3){
+      help();
+      exit(1);
+    }
     for (int i = 0; i < argc; ++i) 
         printf("\nargument value %d = %s\n",i,argv[i]);
     real_time_setup();
     char *sobel_string = "Sobel"; 
-    int transform_number = atoi(argv[1]);
+    transform_number = atoi(argv[1]);
+    image_width = atoi(argv[2]);
+    image_height = atoi(argv[3]);
+    //frames_required_to_be_transformed = atoi(argv[4]);
+    capture.set(CV_CAP_PROP_FRAME_WIDTH,image_width);
+    capture.set(CV_CAP_PROP_FRAME_HEIGHT,image_height);
+
     //printf("argument 1 value %s",argv[1]);
-    if(transform_number==1){
-    
-    rc=pthread_create(&threads[0],               // pointer to thread descriptor
+    switch(transform_number){
+    case 1:
+        rc=pthread_create(&threads[0],               // pointer to thread descriptor
                       &rt_sched_attr[0],         // use specific attributes
                       //(void *)0,                 // default attributes
                       sobel_transform,                     // thread function entry point
                       (void *)0 // parameters to pass in
                      );
+        break;
 
-    }else if(transform_number==2){
+    case 2:
        rc=pthread_create(&threads[0],               // pointer to thread descriptor
                       &rt_sched_attr[0],         // use specific attributes
                       //(void *)0,                 // default attributes
                       canny_transform,                     // thread function entry point
                       (void *)0); // parameters to pass in
+       break;
+    
+    case 3:
+      rc=pthread_create(&threads[0],               // pointer to thread descriptor
+                      &rt_sched_attr[0],         // use specific attributes
+                      //(void *)0,                 // default attributes
+                      hough_circle_transform,                     // thread function entry point
+                      (void *)0); // parameters to pass in      
+      break;
     }
 
     //usleep(3000000);
@@ -290,9 +488,7 @@ int main(int argc, char** argv){
       
     //frame_rate = (total_frame_count-100)*1000/total_transformation_time;
     frame_rate = (total_frame_count/total_transformation_time)*1000;
-    printf("Total Frames processed: %d \n",(int)total_frame_count);
-    printf("Total transformation time: %f \n",(int)total_transformation_time);
-    printf("frame rate = %f frames per second\n", frame_rate);
+    print_frame_analysis_output();
 
    printf("\nTEST COMPLETE\n");
 }
