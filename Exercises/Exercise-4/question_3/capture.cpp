@@ -18,22 +18,19 @@ using namespace std;
 int main( int argc, char** argv )
 {
     cvNamedWindow("Capture Example", CV_WINDOW_AUTOSIZE);
-    CvCapture* capture = cvCreateCameraCapture(0);
-    IplImage* frame;
+    VideoCapture cap(0);
+    Mat frame;
 
     while(1)
     {
-        frame=cvQueryFrame(capture);
-     
-        if(!frame) break;
-
-        cvShowImage("Capture Example", frame);
-
+        cap >> frame;
+        if(frame.empty()){ 
+	break;
+	}
+        imshow("Capture Example", frame);
         char c = cvWaitKey(33);
         if( c == 27 ) break;
     }
-
-    cvReleaseCapture(&capture);
     cvDestroyWindow("Capture Example");
     
-};
+}
