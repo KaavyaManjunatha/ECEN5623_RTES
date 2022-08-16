@@ -9,6 +9,7 @@
                   - Applied sobel transform and saves the original image as well 
 */
 
+//edited test
 #define _GNU_SOURCE
 
 #include <stdio.h>
